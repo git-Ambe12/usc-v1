@@ -14,7 +14,7 @@ version = 1.0
 # it needs pyjnius and the android module for permissions
 # charset_normalizer (pulled in by kivy via requests) is pinned to a pure-Python
 # release: newer ones ship Android wheels that p4a's pip install rejects
-requirements = python3,kivy,pyjnius,android,bleak,typing_extensions,async_timeout,charset_normalizer==3.3.2
+requirements = python3,kivy,pyjnius,android,bleak,typing_extensions,async_timeout,charset_normalizer==3.3.2,plyer
 
 orientation = portrait
 fullscreen = 0

@@ -7,18 +7,26 @@ from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.lang import Builder
 from kivy.properties import (
-    BooleanProperty, ColorProperty, OptionProperty, StringProperty
+    BooleanProperty, ColorProperty, NumericProperty, OptionProperty,
+    StringProperty
 )
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
+from kivy.uix.modalview import ModalView
 from kivy.utils import platform
 
 from bleak import BleakScanner, BleakClient
 
 
 # BLE CONFIGURATION
+# Shown as "Recommended" at the top of the scan list
 DEVICE_NAME = "Basic BLE project"
+SCAN_SECONDS = 10
+
+# GPS: stop once a fix is this accurate (metres), or give up after GPS_TIMEOUT
+GPS_GOOD_ACCURACY = 30
+GPS_TIMEOUT = 30
 
 # Replace with your actual Service UUID if required
 CHAR3_UUID = "0000fff3-0000-1000-8000-00805f9b34fb"
@@ -44,8 +52,8 @@ KV = """
 #:set C_FIELD (0.953, 0.957, 0.965, 1)
 #:set C_BORDER (0.898, 0.906, 0.922, 1)
 
-#:set STATE_DOT {"offline": (0.612, 0.639, 0.686, 1), "scanning": (0.984, 0.749, 0.141, 1), "connected": (0.290, 0.871, 0.502, 1)}
-#:set STATE_TEXT {"offline": "Offline", "scanning": "Scanning", "connected": "Connected"}
+#:set STATE_DOT {"offline": (0.612, 0.639, 0.686, 1), "scanning": (0.984, 0.749, 0.141, 1), "connecting": (0.984, 0.749, 0.141, 1), "connected": (0.290, 0.871, 0.502, 1)}
+#:set STATE_TEXT {"offline": "Offline", "scanning": "Scanning", "connecting": "Connecting", "connected": "Connected"}
 #:set STATUS_FG {"info": (0.420, 0.447, 0.502, 1), "busy": (0.706, 0.325, 0.035, 1), "ok": (0.082, 0.502, 0.239, 1), "error": (0.725, 0.110, 0.110, 1)}
 #:set STATUS_BG {"info": (0.953, 0.957, 0.965, 1), "busy": (0.996, 0.953, 0.780, 1), "ok": (0.863, 0.988, 0.906, 1), "error": (0.996, 0.886, 0.886, 1)}
 
@@ -284,9 +292,9 @@ KV = """
                             radius: [dp(10)]
 
                 AppButton:
-                    text: "Scanning..." if root.connection == "scanning" else ("Disconnect" if root.connection == "connected" else "Scan & Connect")
+                    text: {"scanning": "Scanning...", "connecting": "Connecting...", "connected": "Disconnect"}.get(root.connection, "Scan for Devices")
                     bg: C_DANGER if root.connection == "connected" else C_PRIMARY
-                    disabled: root.connection == "scanning"
+                    disabled: root.connection in ("scanning", "connecting")
                     on_release: root.toggle_connection()
 
                 OutlineButton:
@@ -385,6 +393,112 @@ KV = """
                     text_size: self.width, None
                     height: self.texture_size[1]
                     halign: "left"
+
+
+<DeviceRow>:
+    size_hint_y: None
+    height: dp(64)
+    padding: [dp(14), dp(8)]
+    spacing: dp(10)
+    canvas.before:
+        Color:
+            rgba: C_BORDER if self.state == "down" else ((0.886, 0.957, 0.957, 1) if self.recommended else C_FIELD)
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(10)]
+    BoxLayout:
+        orientation: "vertical"
+        Label:
+            text: root.name or "Unknown device"
+            bold: bool(root.name)
+            color: C_TEXT if root.name else C_MUTED
+            font_size: "15sp"
+            text_size: self.size
+            halign: "left"
+            valign: "middle"
+            shorten: True
+            shorten_from: "right"
+        Label:
+            text: ("Recommended  |  " if root.recommended else "") + root.address
+            color: C_PRIMARY if root.recommended else C_MUTED
+            font_size: "12sp"
+            text_size: self.size
+            halign: "left"
+            valign: "middle"
+            shorten: True
+    Label:
+        text: "%d dBm" % root.rssi
+        size_hint_x: None
+        width: dp(72)
+        font_size: "13sp"
+        bold: True
+        # Signal strength: green strong, amber medium, grey weak
+        color: (0.082, 0.502, 0.239, 1) if root.rssi > -70 else ((0.706, 0.325, 0.035, 1) if root.rssi > -85 else C_MUTED)
+        text_size: self.size
+        halign: "right"
+        valign: "middle"
+
+
+<ScanDialog>:
+    size_hint: 0.94, 0.82
+    auto_dismiss: False
+    background: ""
+    background_color: 0, 0, 0, 0
+    overlay_color: 0, 0, 0, 0.45
+
+    BoxLayout:
+        orientation: "vertical"
+        padding: dp(18)
+        spacing: dp(12)
+        canvas.before:
+            Color:
+                rgba: 1, 1, 1, 1
+            RoundedRectangle:
+                pos: self.pos
+                size: self.size
+                radius: [dp(18)]
+
+        SectionTitle:
+            text: "Select Device"
+            font_size: "19sp"
+
+        Label:
+            text: root.message
+            color: C_MUTED
+            font_size: "13sp"
+            size_hint_y: None
+            text_size: self.width, None
+            height: max(dp(20), self.texture_size[1])
+            halign: "left"
+
+        ScrollView:
+            do_scroll_x: False
+            bar_width: dp(4)
+            BoxLayout:
+                id: device_list
+                orientation: "vertical"
+                size_hint_y: None
+                height: self.minimum_height
+                spacing: dp(8)
+
+        OutlineButton:
+            text: ("Hide" if root.show_unnamed else "Show") + " unnamed devices"
+            font_size: "13sp"
+            height: dp(38)
+            on_release: root.show_unnamed = not root.show_unnamed
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(50)
+            spacing: dp(10)
+            OutlineButton:
+                text: "Cancel"
+                on_release: root.cancel()
+            AppButton:
+                text: "Scanning..." if root.scanning else "Scan Again"
+                disabled: root.scanning
+                on_release: root.screen.start_scan()
 """
 
 
@@ -398,11 +512,121 @@ class RecordRow(BoxLayout):
     value = StringProperty("")
 
 
+class DeviceRow(ButtonBehavior, BoxLayout):
+    name = StringProperty("")
+    address = StringProperty("")
+    rssi = NumericProperty(-100)
+    recommended = BooleanProperty(False)
+
+
+class ScanDialog(ModalView):
+    """Lists BLE devices as they are discovered; tapping one connects to it."""
+
+    message = StringProperty("")
+    scanning = BooleanProperty(False)
+    show_unnamed = BooleanProperty(False)
+
+    def __init__(self, screen, **kwargs):
+        super().__init__(**kwargs)
+        self.screen = screen
+        self.devices = {}   # address -> BLEDevice
+        self.rows = {}      # address -> DeviceRow
+        self.error = ""
+
+    def clear(self):
+        self.error = ""
+        self.devices.clear()
+        self.rows.clear()
+        self.ids.device_list.clear_widgets()
+        self.update_message()
+
+    def add_device(self, device, name, rssi):
+        address = device.address
+        self.devices[address] = device
+
+        row = self.rows.get(address)
+        if row is None:
+            row = DeviceRow(address=address)
+            row.bind(on_release=lambda r: self.select(r.address))
+            self.rows[address] = row
+
+        # Scan responses can add a name later, so keep the first one we saw
+        row.name = name or row.name
+        row.rssi = rssi
+        row.recommended = row.name == DEVICE_NAME
+
+        self.place_row(row)
+        self.update_message()
+
+    def place_row(self, row):
+        device_list = self.ids.device_list
+        visible = bool(row.name) or self.show_unnamed
+
+        if not visible:
+            if row.parent:
+                device_list.remove_widget(row)
+            return
+
+        if row.parent is None:
+            # Recommended device goes to the top; others are appended below
+            index = len(device_list.children) if row.recommended else 0
+            device_list.add_widget(row, index=index)
+
+    def on_show_unnamed(self, *args):
+        device_list = self.ids.device_list
+        device_list.clear_widgets()
+
+        for row in self.sorted_rows():
+            if row.name or self.show_unnamed:
+                device_list.add_widget(row, index=0)
+
+        self.update_message()
+
+    def sorted_rows(self):
+        return sorted(
+            self.rows.values(),
+            key=lambda r: (not r.recommended, not r.name, -r.rssi)
+        )
+
+    def finish_scan(self):
+        self.scanning = False
+        # Re-sort by signal strength now that rows are no longer arriving
+        self.on_show_unnamed()
+
+    def update_message(self):
+        shown = len(self.ids.device_list.children)
+        hidden = len(self.rows) - shown
+        hidden_text = f" ({hidden} unnamed hidden)" if hidden else ""
+
+        if self.error:
+            self.message = self.error
+        elif self.scanning:
+            self.message = f"Searching... {shown} found{hidden_text}"
+        elif self.rows:
+            self.message = f"{shown} device(s) found{hidden_text}. Tap one to connect."
+        else:
+            self.message = "No devices found. Make sure the device is on and nearby, then scan again."
+
+    def select(self, address):
+        device = self.devices[address]
+        name = self.rows[address].name or address
+        self.dismiss()
+        self.screen.connect_to(device, name)
+
+    def cancel(self):
+        self.screen.stop_scan()
+        self.dismiss()
+        if self.screen.connection == "scanning":
+            self.screen.connection = "offline"
+
+
 class MainScreen(BoxLayout):
 
-    status = StringProperty("Tap Scan & Connect to find your device.")
+    status = StringProperty("Tap Scan for Devices to find your device.")
     status_kind = OptionProperty("info", options=["info", "busy", "ok", "error"])
-    connection = OptionProperty("offline", options=["offline", "scanning", "connected"])
+    connection = OptionProperty(
+        "offline", options=["offline", "scanning", "connecting", "connected"]
+    )
     has_record = BooleanProperty(False)
     raw_log = StringProperty("")
 
@@ -412,6 +636,14 @@ class MainScreen(BoxLayout):
         self.client = None
         self.received_data = {}
         self.tasks = set()
+
+        self.scan_dialog = None
+        self.scan_running = False
+        self.stop_scan_event = None
+
+        self.gps_running = False
+        self.gps_best_accuracy = None
+        self.gps_timeout_event = Clock.create_trigger(self.on_gps_timeout, GPS_TIMEOUT)
 
         self.raw_lines = []
         self.rx_buffer = ""
@@ -468,79 +700,130 @@ class MainScreen(BoxLayout):
 
     def scan_device(self):
         if platform == "android":
-            self.request_android_permissions(self.start_scan)
+            from jnius import autoclass
+
+            # Android 12+ needs BLUETOOTH_SCAN/CONNECT; older versions need location
+            permissions = ["android.permission.ACCESS_FINE_LOCATION"]
+            if autoclass("android.os.Build$VERSION").SDK_INT >= 31:
+                permissions += [
+                    "android.permission.BLUETOOTH_SCAN",
+                    "android.permission.BLUETOOTH_CONNECT",
+                ]
+
+            self.request_android_permissions(
+                permissions, self.open_scan_dialog,
+                "Bluetooth and location permissions are needed to find devices."
+            )
         else:
-            self.start_scan()
+            self.open_scan_dialog()
 
-    def start_scan(self):
-        self.update_status("Scanning for nearby BLE devices...", "busy", "scanning")
-        self.run_async(self.connect_ble())
-
-    def request_android_permissions(self, on_granted):
-        # Android 12+ needs BLUETOOTH_SCAN/CONNECT; older versions need location
+    def request_android_permissions(self, permissions, on_granted, denied_message):
         from android.permissions import request_permissions
-        from jnius import autoclass
-
-        sdk = autoclass("android.os.Build$VERSION").SDK_INT
-
-        permissions = ["android.permission.ACCESS_FINE_LOCATION"]
-        if sdk >= 31:
-            permissions += [
-                "android.permission.BLUETOOTH_SCAN",
-                "android.permission.BLUETOOTH_CONNECT",
-            ]
 
         def callback(names, results):
             if all(results):
                 Clock.schedule_once(lambda dt: on_granted())
             else:
-                self.update_status(
-                    "Bluetooth and location permissions are needed to find the device.",
-                    "error", "offline"
-                )
+                self.update_status(denied_message, "error")
 
         request_permissions(permissions, callback)
 
-    async def connect_ble(self):
+    def open_scan_dialog(self):
+        self.scan_dialog = ScanDialog(self)
+        self.scan_dialog.open()
+        self.start_scan()
+
+    def start_scan(self):
+        if self.scan_running:
+            return
+
+        self.scan_running = True
+        self.scan_dialog.clear()
+        self.scan_dialog.scanning = True
+        self.scan_dialog.update_message()
+        self.connection = "scanning"
+        self.run_async(self.scan_ble())
+
+    async def scan_ble(self):
+        dialog = self.scan_dialog
+        self.stop_scan_event = asyncio.Event()
+
+        def on_detect(device, advertisement):
+            name = advertisement.local_name or device.name or ""
+            rssi = advertisement.rssi
+            Clock.schedule_once(
+                lambda dt: dialog.add_device(device, name, rssi)
+            )
 
         try:
-            devices = await BleakScanner.discover(
-                timeout=8
-            )
+            async with BleakScanner(detection_callback=on_detect):
+                try:
+                    await asyncio.wait_for(
+                        self.stop_scan_event.wait(), SCAN_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    pass
 
-            target = None
+        except Exception as error:
+            message = "Scan error: " + str(error)
+            dialog.error = message
+            self.update_status(message, "error")
 
-            for device in devices:
-                if device.name == DEVICE_NAME:
-                    target = device
-                    break
+        finally:
+            self.scan_running = False
 
-            if target is None:
-                self.update_status(
-                    f'"{DEVICE_NAME}" not found. Make sure it is powered on and nearby.',
-                    "error", "offline"
-                )
-                return
+            def done(dt):
+                if self.connection == "scanning":
+                    self.connection = "offline"
+                if dialog.scanning:
+                    dialog.finish_scan()
 
-            self.update_status(f"Connecting to {DEVICE_NAME}...", "busy")
+            Clock.schedule_once(done)
 
+    def stop_scan(self):
+        event = self.stop_scan_event
+        if event is not None and self.scan_running:
+            loop = self.loop or asyncio.get_running_loop()
+            loop.call_soon_threadsafe(event.set)
+
+    def connect_to(self, device, name):
+        self.stop_scan()
+        self.update_status(f"Connecting to {name}...", "busy", "connecting")
+        self.run_async(self.connect_ble(device, name))
+
+    async def connect_ble(self, device, name):
+
+        # Android can't connect reliably while a scan is still running
+        while self.scan_running:
+            await asyncio.sleep(0.05)
+
+        try:
             self.client = BleakClient(
-                target,
+                device,
                 disconnected_callback=self.on_ble_disconnected
             )
-            await self.client.connect()
+            await self.client.connect(timeout=20)
 
-            if self.client.is_connected:
-
+            try:
                 await self.client.start_notify(
                     CHAR4_UUID,
                     self.notification_handler
                 )
+            except Exception:
+                await self.client.disconnect()
+                self.update_status(
+                    f"{name} doesn't have the USC-V1 data channel (FFF4). "
+                    "Choose the correct device.",
+                    "error", "offline"
+                )
+                return
 
-                self.update_status(f"Connected to {DEVICE_NAME}.", "ok", "connected")
+            self.update_status(f"Connected to {name}.", "ok", "connected")
 
         except Exception as error:
-            self.update_status("BLE error: " + str(error), "error", "offline")
+            self.update_status(
+                f"Could not connect to {name}: {error}", "error", "offline"
+            )
 
     def on_ble_disconnected(self, client):
         self.update_status("Device disconnected.", "info", "offline")
@@ -729,13 +1012,126 @@ class MainScreen(BoxLayout):
                 "ok"
             )
 
-    # GPS PLACEHOLDER
+    # GPS LOCATION
 
     def get_location(self):
-        self.update_status(
-            "GPS is not available yet. Please type the coordinates.",
-            "info"
+
+        if platform != "android":
+            self.update_status(
+                "GPS works in the phone app. On this computer, type the coordinates.",
+                "info"
+            )
+            return
+
+        if self.gps_running:
+            return
+
+        self.request_android_permissions(
+            [
+                "android.permission.ACCESS_FINE_LOCATION",
+                "android.permission.ACCESS_COARSE_LOCATION",
+            ],
+            self.start_gps,
+            "Location permission is needed to read GPS."
         )
+
+    def start_gps(self):
+        from plyer import gps
+
+        if not self.location_services_on():
+            self.update_status(
+                "Location is turned off. Turn on Location in phone settings and try again.",
+                "error"
+            )
+            return
+
+        try:
+            gps.configure(
+                on_location=self.on_gps_location,
+                on_status=self.on_gps_status
+            )
+            gps.start(minTime=1000, minDistance=0)
+        except Exception as error:
+            self.update_status("GPS error: " + str(error), "error")
+            return
+
+        self.gps_running = True
+        self.gps_best_accuracy = None
+        self.gps_timeout_event()
+        self.update_status("Getting GPS location... (works best outdoors)", "busy")
+
+    def location_services_on(self):
+        from jnius import autoclass, cast
+
+        Context = autoclass("android.content.Context")
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        manager = cast(
+            "android.location.LocationManager",
+            activity.getSystemService(Context.LOCATION_SERVICE)
+        )
+        return (
+            manager.isProviderEnabled("gps")
+            or manager.isProviderEnabled("network")
+        )
+
+    def stop_gps(self):
+        if not self.gps_running:
+            return
+
+        from plyer import gps
+
+        self.gps_running = False
+        self.gps_timeout_event.cancel()
+        try:
+            gps.stop()
+        except Exception as error:
+            print("GPS stop error:", error)
+
+    def on_gps_location(self, **kwargs):
+        # Called on the Android UI thread: hand over to the Kivy thread
+        Clock.schedule_once(lambda dt: self.set_gps_location(**kwargs))
+
+    def set_gps_location(self, lat, lon, accuracy=None, **kwargs):
+
+        if not self.gps_running:
+            return
+
+        accuracy = accuracy if accuracy else 9999
+
+        # Keep refining until the fix is accurate enough
+        if self.gps_best_accuracy is not None and accuracy >= self.gps_best_accuracy:
+            return
+
+        self.gps_best_accuracy = accuracy
+        self.ids.location.text = f"{lat:.6f},{lon:.6f}"
+
+        if accuracy <= GPS_GOOD_ACCURACY:
+            self.stop_gps()
+            self.update_status(f"Location set (accurate to {accuracy:.0f} m).", "ok")
+        else:
+            self.update_status(
+                f"Location found (±{accuracy:.0f} m). Improving accuracy...", "busy"
+            )
+
+    def on_gps_status(self, stype, status):
+        print("GPS status:", stype, status)
+
+    def on_gps_timeout(self, dt):
+
+        if not self.gps_running:
+            return
+
+        self.stop_gps()
+
+        if self.gps_best_accuracy is None:
+            self.update_status(
+                "Could not get a GPS location. Go near a window or outdoors and try again.",
+                "error"
+            )
+        else:
+            self.update_status(
+                f"Location set (accurate to {self.gps_best_accuracy:.0f} m).", "ok"
+            )
 
     # REQUEST RECORD
 
