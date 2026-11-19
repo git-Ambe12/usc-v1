@@ -12,7 +12,9 @@ version = 1.0
 
 # bleak is built from ./recipes (copied from bleak's Android backend);
 # it needs pyjnius and the android module for permissions
-requirements = python3,kivy,pyjnius,android,bleak,typing_extensions,async_timeout
+# charset_normalizer (pulled in by kivy via requests) is pinned to a pure-Python
+# release: newer ones ship Android wheels that p4a's pip install rejects
+requirements = python3,kivy,pyjnius,android,bleak,typing_extensions,async_timeout,charset_normalizer==3.3.2
 
 orientation = portrait
 fullscreen = 0
