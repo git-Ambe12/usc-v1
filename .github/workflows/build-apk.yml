@@ -55,11 +55,17 @@ jobs:
           # Publish the end of the log as an annotation (visible without signing in)
           # Buildozer prints an environment dump after "Command failed", so show what came before it
           sed 's/\x1b\[[0-9;]*m//g' build.log > clean.log
-          n=$(grep -n "Command failed" clean.log | tail -1 | cut -d: -f1)
-          n=${n:-$(wc -l < clean.log)}
-          start=$(( n > 100 ? n - 100 : 1 ))
+          {
+            # Gradle's explanation of the failure, if any
+            awk '/What went wrong/ {f=1} f {print; if (++n >= 30) exit}' clean.log
+            # Compiler / pip / python errors anywhere in the log
+            grep -E "error:|Error:|ERROR:|FAILED|Exception|Traceback" clean.log | grep -v "^export " | tail -25
+            # Lines just before buildozer gave up, minus its environment dump
+            n=$(grep -n "Command failed" clean.log | tail -1 | cut -d: -f1)
+            n=${n:-$(wc -l < clean.log)}
+            sed -n "$(( n > 40 ? n - 40 : 1 )),${n}p" clean.log | grep -v "^export "
+          } | cut -c1-220 | sed 's/%/%25/g' > tail.log
           # GitHub truncates long annotations, so post the lines in chunks of 20
-          sed -n "${start},$((n + 2))p" clean.log | cut -c1-220 | sed 's/%/%25/g' > tail.log
           split -l 20 -d tail.log chunk_
           for f in chunk_*; do
             echo "::error title=Build log $f::$(sed ':a;N;$!ba;s/\n/%0A/g' "$f")"
