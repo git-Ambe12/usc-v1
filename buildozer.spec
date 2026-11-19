@@ -27,6 +27,8 @@ android.minapi = 24
 android.archs = arm64-v8a
 android.accept_sdk_license = True
 android.enable_androidx = True
+# Google Play services fused location (the location source Google Maps uses)
+android.gradle_dependencies = com.google.android.gms:play-services-location:21.3.0
 
 p4a.local_recipes = ./recipes
 # Stable python-for-android release instead of the development branch

@@ -28,6 +28,9 @@ SCAN_SECONDS = 10
 GPS_GOOD_ACCURACY = 30
 GPS_TIMEOUT = 30
 
+# com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY
+PRIORITY_HIGH_ACCURACY = 100
+
 # Replace with your actual Service UUID if required
 CHAR3_UUID = "0000fff3-0000-1000-8000-00805f9b34fb"
 CHAR4_UUID = "0000fff4-0000-1000-8000-00805f9b34fb"
@@ -512,6 +515,41 @@ class RecordRow(BoxLayout):
     value = StringProperty("")
 
 
+if platform == "android":
+    from jnius import PythonJavaClass, cast, java_method
+
+    class FusedLocationListener(PythonJavaClass):
+        """Receives the result of a Google Play services location request."""
+
+        __javainterfaces__ = [
+            "com/google/android/gms/tasks/OnSuccessListener",
+            "com/google/android/gms/tasks/OnFailureListener",
+        ]
+        # Play services classes live in the app, not the Android system
+        __javacontext__ = "app"
+
+        def __init__(self, on_location, on_error):
+            super().__init__()
+            self.on_location = on_location
+            self.on_error = on_error
+
+        @java_method("(Ljava/lang/Object;)V")
+        def onSuccess(self, result):
+            if result is None:
+                self.on_location(None)
+                return
+
+            location = cast("android.location.Location", result)
+            accuracy = location.getAccuracy() if location.hasAccuracy() else None
+            self.on_location(
+                (location.getLatitude(), location.getLongitude(), accuracy)
+            )
+
+        @java_method("(Ljava/lang/Exception;)V")
+        def onFailure(self, error):
+            self.on_error(error.toString())
+
+
 class DeviceRow(ButtonBehavior, BoxLayout):
     name = StringProperty("")
     address = StringProperty("")
@@ -642,6 +680,8 @@ class MainScreen(BoxLayout):
         self.stop_scan_event = None
 
         self.gps_running = False
+        self.gps_mode = None
+        self.gps_listeners = []
         self.gps_best_accuracy = None
         self.gps_timeout_event = Clock.create_trigger(self.on_gps_timeout, GPS_TIMEOUT)
 
@@ -1036,14 +1076,95 @@ class MainScreen(BoxLayout):
         )
 
     def start_gps(self):
+
+        try:
+            if not self.location_services_on():
+                self.update_status(
+                    "Location is turned off. Turn on Location in phone settings and try again.",
+                    "error"
+                )
+                return
+        except Exception as error:
+            print("Could not check location settings:", error)
+
+        self.gps_running = True
+        self.gps_best_accuracy = None
+        self.gps_timeout_event()
+        self.update_status("Getting location...", "busy")
+
+        try:
+            self.start_fused_location()
+        except Exception as error:
+            # No Google Play services (e.g. some Huawei phones): use plain GPS
+            print("Google location unavailable, using GPS:", error)
+            self.start_plyer_gps()
+
+    def start_fused_location(self):
+        # Google Play services' fused location: the same source Google Maps
+        # uses (GPS + Wi-Fi + mobile network), so it also works indoors
+        from jnius import autoclass
+
+        LocationServices = autoclass(
+            "com.google.android.gms.location.LocationServices"
+        )
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        client = LocationServices.getFusedLocationProviderClient(activity)
+
+        self.gps_mode = "fused"
+
+        # Last known location gives an instant answer; the current location
+        # request then replaces it with a fresh, accurate fix
+        last = FusedLocationListener(
+            lambda values: self.on_fused_location(values, final=False),
+            self.on_fused_error
+        )
+        current = FusedLocationListener(
+            lambda values: self.on_fused_location(values, final=True),
+            self.on_fused_error
+        )
+        # Keep references, or Python may garbage-collect the Java listeners
+        self.gps_listeners = [last, current]
+
+        task = client.getLastLocation()
+        task.addOnSuccessListener(last)
+        task.addOnFailureListener(last)
+
+        task = client.getCurrentLocation(PRIORITY_HIGH_ACCURACY, None)
+        task.addOnSuccessListener(current)
+        task.addOnFailureListener(current)
+
+    def on_fused_location(self, values, final):
+        # Called on the Android UI thread: hand over to the Kivy thread
+        Clock.schedule_once(lambda dt: self.handle_fused_location(values, final))
+
+    def handle_fused_location(self, values, final):
+
+        if not self.gps_running or self.gps_mode != "fused":
+            return
+
+        if values is not None:
+            # A last-known location may be old, so wait for the fresh one
+            self.set_gps_location(*values, allow_finish=final)
+
+        if final and self.gps_running:
+            if self.gps_best_accuracy is None:
+                # Google could not get a fix; try the phone's GPS directly
+                self.start_plyer_gps()
+            else:
+                self.finish_gps()
+
+    def on_fused_error(self, message):
+        def fallback(dt):
+            if self.gps_running and self.gps_mode == "fused":
+                print("Google location failed, using GPS:", message)
+                self.start_plyer_gps()
+
+        Clock.schedule_once(fallback)
+
+    def start_plyer_gps(self):
         from plyer import gps
 
-        if not self.location_services_on():
-            self.update_status(
-                "Location is turned off. Turn on Location in phone settings and try again.",
-                "error"
-            )
-            return
+        self.gps_mode = "plyer"
 
         try:
             gps.configure(
@@ -1052,13 +1173,13 @@ class MainScreen(BoxLayout):
             )
             gps.start(minTime=1000, minDistance=0)
         except Exception as error:
+            self.gps_running = False
+            self.gps_timeout_event.cancel()
             self.update_status("GPS error: " + str(error), "error")
             return
 
-        self.gps_running = True
-        self.gps_best_accuracy = None
-        self.gps_timeout_event()
-        self.update_status("Getting GPS location... (works best outdoors)", "busy")
+        if self.gps_best_accuracy is None:
+            self.update_status("Getting GPS location... (works best outdoors)", "busy")
 
     def location_services_on(self):
         from jnius import autoclass, cast
@@ -1078,20 +1199,30 @@ class MainScreen(BoxLayout):
         if not self.gps_running:
             return
 
-        from plyer import gps
-
         self.gps_running = False
         self.gps_timeout_event.cancel()
-        try:
-            gps.stop()
-        except Exception as error:
-            print("GPS stop error:", error)
+        self.gps_listeners = []
+
+        # Fused location requests are one-shot; only plain GPS needs stopping
+        if self.gps_mode == "plyer":
+            from plyer import gps
+
+            try:
+                gps.stop()
+            except Exception as error:
+                print("GPS stop error:", error)
+
+    def finish_gps(self):
+        self.stop_gps()
+        self.update_status(
+            f"Location set (accurate to {self.gps_best_accuracy:.0f} m).", "ok"
+        )
 
     def on_gps_location(self, **kwargs):
         # Called on the Android UI thread: hand over to the Kivy thread
         Clock.schedule_once(lambda dt: self.set_gps_location(**kwargs))
 
-    def set_gps_location(self, lat, lon, accuracy=None, **kwargs):
+    def set_gps_location(self, lat, lon, accuracy=None, allow_finish=True, **kwargs):
 
         if not self.gps_running:
             return
@@ -1105,9 +1236,8 @@ class MainScreen(BoxLayout):
         self.gps_best_accuracy = accuracy
         self.ids.location.text = f"{lat:.6f},{lon:.6f}"
 
-        if accuracy <= GPS_GOOD_ACCURACY:
-            self.stop_gps()
-            self.update_status(f"Location set (accurate to {accuracy:.0f} m).", "ok")
+        if accuracy <= GPS_GOOD_ACCURACY and allow_finish:
+            self.finish_gps()
         else:
             self.update_status(
                 f"Location found (±{accuracy:.0f} m). Improving accuracy...", "busy"
@@ -1121,17 +1251,15 @@ class MainScreen(BoxLayout):
         if not self.gps_running:
             return
 
-        self.stop_gps()
-
         if self.gps_best_accuracy is None:
+            self.stop_gps()
             self.update_status(
-                "Could not get a GPS location. Go near a window or outdoors and try again.",
+                "Could not get a location. Check that Location is on, go near "
+                "a window or outdoors, and try again.",
                 "error"
             )
         else:
-            self.update_status(
-                f"Location set (accurate to {self.gps_best_accuracy:.0f} m).", "ok"
-            )
+            self.finish_gps()
 
     # REQUEST RECORD
 
