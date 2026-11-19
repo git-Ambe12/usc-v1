@@ -368,6 +368,23 @@ KV = """
                     size_hint_y: None
                     height: self.minimum_height
                     spacing: dp(8)
+
+            # Raw notifications, shown once the device sends anything
+            Card:
+                opacity: 1 if root.raw_log else 0
+                disabled: not root.raw_log
+                SectionTitle:
+                    text: "Raw data from device"
+                    font_size: "14sp"
+                Label:
+                    text: root.raw_log
+                    font_name: "RobotoMono-Regular"
+                    font_size: "12sp"
+                    color: C_TEXT
+                    size_hint_y: None
+                    text_size: self.width, None
+                    height: self.texture_size[1]
+                    halign: "left"
 """
 
 
@@ -387,6 +404,7 @@ class MainScreen(BoxLayout):
     status_kind = OptionProperty("info", options=["info", "busy", "ok", "error"])
     connection = OptionProperty("offline", options=["offline", "scanning", "connected"])
     has_record = BooleanProperty(False)
+    raw_log = StringProperty("")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -394,6 +412,13 @@ class MainScreen(BoxLayout):
         self.client = None
         self.received_data = {}
         self.tasks = set()
+
+        self.raw_lines = []
+        self.rx_buffer = ""
+        self.line_mode = False
+        self.record_done = True
+        self.finish_event = Clock.create_trigger(self.finish_record, 2)
+        self.no_reply_event = Clock.create_trigger(self.on_no_reply, 6)
 
         if platform == "android":
             # Android: Kivy runs on the asyncio loop (see __main__). BLE must
@@ -525,26 +550,94 @@ class MainScreen(BoxLayout):
     def notification_handler(self, sender, data):
 
         try:
-            message = data.decode("utf-8").strip()
+            text = data.decode("utf-8", errors="replace")
 
             Clock.schedule_once(
-                lambda dt: self.process_message(message)
+                lambda dt: self.process_chunk(text)
             )
 
         except Exception as error:
             print("Notification error:", error)
 
+    def process_chunk(self, text):
+        # Show every notification exactly as received, for troubleshooting
+        self.raw_lines.append(repr(text))
+        self.raw_lines = self.raw_lines[-30:]
+        self.raw_log = "\n".join(self.raw_lines)
+
+        self.no_reply_event.cancel()
+
+        # A notification may hold one message, several newline-separated
+        # messages, or part of a message that continues in the next one.
+        # Once a newline is seen, the device is treated as sending lines.
+        text = text.replace("\r", "\n")
+
+        if "\n" in text:
+            self.line_mode = True
+
+        if self.line_mode:
+            self.rx_buffer += text
+            *lines, self.rx_buffer = self.rx_buffer.split("\n")
+        elif text.strip().upper() == "END":
+            lines = [self.rx_buffer, text]
+            self.rx_buffer = ""
+        else:
+            # Without newlines, the held chunk was a complete message unless
+            # this chunk turns out to continue it (handled by line_mode above)
+            lines = [self.rx_buffer]
+            self.rx_buffer = text
+
+        for line in lines:
+            self.process_message(line)
+
+        if not self.record_done:
+            self.status = f"Receiving record... ({len(self.received_data)} fields)"
+            self.status_kind = "busy"
+            # If the device never sends END, show what arrived after a pause
+            self.finish_event()
+
     def process_message(self, message):
 
-        if message == "END":
-            self.show_record()
-            self.status = "Record received successfully."
-            self.status_kind = "ok"
+        message = message.strip()
+
+        if not message:
+            return
+
+        if message.upper() == "END":
+            self.finish_record(ended=True)
             return
 
         if ":" in message:
             key, value = message.split(":", 1)
-            self.received_data[key] = value
+            self.received_data[key.strip()] = value
+
+    def finish_record(self, dt=None, ended=False):
+
+        if self.record_done:
+            return
+
+        if self.rx_buffer.strip():
+            leftover, self.rx_buffer = self.rx_buffer, ""
+            self.process_message(leftover)
+
+        self.finish_event.cancel()
+        self.show_record()
+
+        if not self.received_data:
+            self.status = "Device replied, but no KEY:value fields were found. See raw data below."
+            self.status_kind = "error"
+        elif ended:
+            self.status = "Record received successfully."
+            self.status_kind = "ok"
+        else:
+            self.status = "Record received (device did not send END)."
+            self.status_kind = "ok"
+
+        self.record_done = True
+
+    def on_no_reply(self, dt):
+        self.status = "No reply from the device. Check that it supports the Q: request."
+        self.status_kind = "error"
 
     def show_record(self):
         box = self.ids.records_box
@@ -651,6 +744,14 @@ class MainScreen(BoxLayout):
         self.received_data.clear()
         self.ids.records_box.clear_widgets()
         self.has_record = False
+
+        self.raw_lines = []
+        self.raw_log = ""
+        self.rx_buffer = ""
+        self.line_mode = False
+        self.record_done = False
+        self.finish_event.cancel()
+        self.no_reply_event()
 
         self.update_status("Requesting device record...", "busy")
         self.run_async(
