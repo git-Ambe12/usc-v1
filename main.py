@@ -392,22 +392,36 @@ class MainScreen(BoxLayout):
         super().__init__(**kwargs)
 
         self.client = None
-        self.loop = asyncio.new_event_loop()
         self.received_data = {}
+        self.tasks = set()
 
-        threading.Thread(
-            target=self.run_loop,
-            daemon=True
-        ).start()
+        if platform == "android":
+            # Android: Kivy runs on the asyncio loop (see __main__). BLE must
+            # stay on this thread, since other Python threads can't load the
+            # app's Java classes (bleak's PythonScanCallback).
+            self.loop = None
+        else:
+            self.loop = asyncio.new_event_loop()
+
+            threading.Thread(
+                target=self.run_loop,
+                daemon=True
+            ).start()
 
     def run_loop(self):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
     def run_async(self, coroutine):
-        asyncio.run_coroutine_threadsafe(
-            coroutine, self.loop
-        )
+        if self.loop is None:
+            task = asyncio.get_running_loop().create_task(coroutine)
+            # Keep a reference so the task isn't garbage-collected mid-run
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
+        else:
+            asyncio.run_coroutine_threadsafe(
+                coroutine, self.loop
+            )
 
     def update_status(self, message, kind="info", connection=None):
         # Safe to call from the BLE thread: UI changes happen on the Kivy thread
@@ -673,4 +687,7 @@ class USCV1App(App):
 
 
 if __name__ == "__main__":
-    USCV1App().run()
+    if platform == "android":
+        asyncio.run(USCV1App().async_run(async_lib="asyncio"))
+    else:
+        USCV1App().run()
