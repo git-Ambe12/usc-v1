@@ -22,9 +22,15 @@ jobs:
 
       - name: Install system packages
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git zip unzip autoconf automake libtool libltdl-dev \
-            pkg-config zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev build-essential
+          # Ubuntu mirrors occasionally fail; retry a few times before giving up
+          for attempt in 1 2 3; do
+            sudo apt-get update -o Acquire::Retries=3 &&
+            sudo apt-get install -y -o Acquire::Retries=3 git zip unzip autoconf automake \
+              libtool libltdl-dev pkg-config zlib1g-dev libncurses-dev cmake libffi-dev \
+              libssl-dev build-essential && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "apt-get failed, retrying in 30s..."; sleep 30
+          done
 
       - name: Install Buildozer
         run: pip install --upgrade buildozer "Cython==3.0.11" setuptools
