@@ -50,8 +50,13 @@ jobs:
           sed 's/\x1b\[[0-9;]*m//g' build.log > clean.log
           n=$(grep -n "Command failed" clean.log | tail -1 | cut -d: -f1)
           n=${n:-$(wc -l < clean.log)}
-          start=$(( n > 150 ? n - 150 : 1 ))
-          sed -n "${start},$((n + 2))p" clean.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g' | sed 's/^/::error title=Build log tail::/'
+          start=$(( n > 100 ? n - 100 : 1 ))
+          # GitHub truncates long annotations, so post the lines in chunks of 20
+          sed -n "${start},$((n + 2))p" clean.log | cut -c1-220 | sed 's/%/%25/g' > tail.log
+          split -l 20 -d tail.log chunk_
+          for f in chunk_*; do
+            echo "::error title=Build log $f::$(sed ':a;N;$!ba;s/\n/%0A/g' "$f")"
+          done
 
       - name: Upload APK
         uses: actions/upload-artifact@v5

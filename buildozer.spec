@@ -22,11 +22,13 @@ android.permissions = BLUETOOTH, BLUETOOTH_ADMIN, BLUETOOTH_SCAN, BLUETOOTH_CONN
 
 android.api = 34
 android.minapi = 24
-android.archs = arm64-v8a, armeabi-v7a
+android.archs = arm64-v8a
 android.accept_sdk_license = True
 android.enable_androidx = True
 
 p4a.local_recipes = ./recipes
+# Stable python-for-android release instead of the development branch
+p4a.branch = v2026.05.09
 
 [buildozer]
 log_level = 2
