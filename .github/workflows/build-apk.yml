@@ -46,7 +46,12 @@ jobs:
         if: failure()
         run: |
           # Publish the end of the log as an annotation (visible without signing in)
-          tail -n 120 build.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g' | sed 's/^/::error title=Build log tail::/'
+          # Buildozer prints an environment dump after "Command failed", so show what came before it
+          sed 's/\x1b\[[0-9;]*m//g' build.log > clean.log
+          n=$(grep -n "Command failed" clean.log | tail -1 | cut -d: -f1)
+          n=${n:-$(wc -l < clean.log)}
+          start=$(( n > 150 ? n - 150 : 1 ))
+          sed -n "${start},$((n + 2))p" clean.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g' | sed 's/^/::error title=Build log tail::/'
 
       - name: Upload APK
         uses: actions/upload-artifact@v5
