@@ -9,13 +9,13 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -38,10 +38,18 @@ jobs:
           key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec', 'recipes/**') }}
 
       - name: Build APK
-        run: yes | buildozer -v android debug
+        run: |
+          set -o pipefail
+          yes | buildozer -v android debug 2>&1 | tee build.log
+
+      - name: Show build error
+        if: failure()
+        run: |
+          # Publish the end of the log as an annotation (visible without signing in)
+          tail -n 120 build.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g' | sed 's/^/::error title=Build log tail::/'
 
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: USC-V1-apk
           path: bin/*.apk
