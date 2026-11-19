@@ -39,8 +39,9 @@ jobs:
 
       - name: Build APK
         run: |
-          set -o pipefail
           yes | buildozer -v android debug 2>&1 | tee build.log
+          # Use buildozer's exit code; `yes` always exits with SIGPIPE
+          exit ${PIPESTATUS[1]}
 
       - name: Show build error
         if: failure()
