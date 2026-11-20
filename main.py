@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 from datetime import datetime
 
@@ -18,6 +19,8 @@ from kivy.utils import platform
 
 from bleak import BleakScanner, BleakClient
 
+from pdf_report import build_pdf
+
 
 # BLE CONFIGURATION
 # Shown as "Recommended" at the top of the scan list
@@ -35,12 +38,18 @@ PRIORITY_HIGH_ACCURACY = 100
 CHAR3_UUID = "0000fff3-0000-1000-8000-00805f9b34fb"
 CHAR4_UUID = "0000fff4-0000-1000-8000-00805f9b34fb"
 
+# The device rejects CHAR3 writes longer than this ("Invalid Attribute Value Length")
+MAX_WRITE_BYTES = 20
+
 # Friendly names for record keys sent by the device
 KEY_LABELS = {
-    "N": "Baby Name",
+    "N": "Patient Name",
     "C": "City",
     "L": "Location",
     "T": "Device Time",
+    "B": "Born Date",
+    "BT": "Born Time",
+    "U": "UC Cut Time",
 }
 
 
@@ -312,7 +321,7 @@ KV = """
 
                 FieldGroup:
                     FieldLabel:
-                        text: "Baby name"
+                        text: "Patient name"
                     Field:
                         id: baby
                         hint_text: "e.g. Baby of Priya"
@@ -379,6 +388,13 @@ KV = """
                     size_hint_y: None
                     height: self.minimum_height
                     spacing: dp(8)
+
+                AppButton:
+                    text: "Save as PDF"
+                    height: dp(50) if root.has_record else 0
+                    opacity: 1 if root.has_record else 0
+                    disabled: not root.has_record
+                    on_release: root.save_pdf()
 
             # Raw notifications, shown once the device sends anything
             Card:
@@ -962,9 +978,9 @@ class MainScreen(BoxLayout):
         self.status = "No reply from the device. Check that it supports the Q: request."
         self.status_kind = "error"
 
-    def show_record(self):
-        box = self.ids.records_box
-        box.clear_widgets()
+    def record_rows(self):
+        # (label, value) pairs of the received record, as shown on screen
+        rows = []
 
         for key, value in self.received_data.items():
             value = value.strip()
@@ -978,12 +994,124 @@ class MainScreen(BoxLayout):
                 except ValueError:
                     pass
 
-            box.add_widget(RecordRow(
-                key=KEY_LABELS.get(key, key),
-                value=value
-            ))
+            rows.append((KEY_LABELS.get(key, key), value))
+
+        return rows
+
+    def show_record(self):
+        box = self.ids.records_box
+        box.clear_widgets()
+
+        for label, value in self.record_rows():
+            box.add_widget(RecordRow(key=label, value=value))
 
         self.has_record = bool(self.received_data)
+
+    # SAVE RECORD AS PDF
+
+    def save_pdf(self):
+
+        if not self.received_data:
+            self.update_status("No record to save. Tap Request first.", "error")
+            return
+
+        if platform == "android":
+            from jnius import autoclass
+
+            # Android 10+ saves to Downloads without any permission
+            if autoclass("android.os.Build$VERSION").SDK_INT < 29:
+                self.request_android_permissions(
+                    ["android.permission.WRITE_EXTERNAL_STORAGE"],
+                    self.write_pdf,
+                    "Storage permission is needed to save the PDF."
+                )
+                return
+
+        self.write_pdf()
+
+    def write_pdf(self):
+
+        now = datetime.now()
+        data = build_pdf(
+            self.record_rows(),
+            title="Patient Record",
+            subtitle="USC-V1 Patient Device Manager",
+            generated="Generated on " + now.strftime("%d %b %Y, %H:%M:%S"),
+        )
+
+        name = self.received_data.get("N", "").strip() or "patient"
+        name = "".join(c if c.isalnum() else "_" for c in name).strip("_")
+        filename = "%s_%s.pdf" % (name or "patient", now.strftime("%Y%m%d_%H%M%S"))
+
+        try:
+            if platform == "android":
+                where = self.save_pdf_android(filename, data)
+            else:
+                folder = os.path.join(os.path.expanduser("~"), "Downloads")
+                if not os.path.isdir(folder):
+                    folder = os.getcwd()
+                where = os.path.join(folder, filename)
+                with open(where, "wb") as file:
+                    file.write(data)
+        except Exception as error:
+            self.update_status("Could not save PDF: " + str(error), "error")
+            return
+
+        self.update_status("PDF saved: " + where, "ok")
+
+    def save_pdf_android(self, filename, data):
+        from jnius import autoclass
+
+        Build = autoclass("android.os.Build$VERSION")
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+
+        if Build.SDK_INT < 29:
+            Environment = autoclass("android.os.Environment")
+            folder = os.path.join(
+                Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS
+                ).getAbsolutePath(),
+                "USC-V1"
+            )
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, filename)
+            with open(path, "wb") as file:
+                file.write(data)
+            return path
+
+        # Android 10+: add the file to the shared Downloads folder via MediaStore
+        ContentValues = autoclass("android.content.ContentValues")
+        Downloads = autoclass("android.provider.MediaStore$Downloads")
+
+        values = ContentValues()
+        values.put("_display_name", filename)
+        values.put("mime_type", "application/pdf")
+        values.put("relative_path", "Download/USC-V1")
+
+        resolver = activity.getContentResolver()
+        uri = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values)
+        if uri is None:
+            raise OSError("Android refused to create the file")
+
+        stream = resolver.openOutputStream(uri)
+        try:
+            stream.write(data)
+        finally:
+            stream.close()
+
+        # Open it in the phone's PDF viewer, if there is one
+        try:
+            Intent = autoclass("android.content.Intent")
+            intent = Intent(Intent.ACTION_VIEW)
+            intent.setDataAndType(uri, "application/pdf")
+            intent.addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK
+            )
+            activity.startActivity(intent)
+        except Exception as error:
+            print("No app to open the PDF:", error)
+
+        return "Download/USC-V1/" + filename
 
     # SEND CHAR3 DATA
 
@@ -1002,7 +1130,15 @@ class MainScreen(BoxLayout):
             return True
 
         except Exception as error:
-            self.update_status("Write error: " + str(error), "error")
+            if "Invalid Attribute Value Length" in str(error):
+                self.update_status(
+                    f"Device rejected '{message}': it is "
+                    f"{len(message.encode('utf-8'))} bytes, more than the "
+                    "device firmware accepts in one write.",
+                    "error"
+                )
+            else:
+                self.update_status("Write error: " + str(error), "error")
             return False
 
     def send_patient_data(self):
@@ -1025,7 +1161,7 @@ class MainScreen(BoxLayout):
         messages = [
             "N:" + baby,
             "C:" + city,
-            "L:" + location
+            "L:" + self.fit_location(location)
         ]
 
         for message in messages:
@@ -1034,6 +1170,21 @@ class MainScreen(BoxLayout):
             await asyncio.sleep(0.3)
 
         self.update_status("Patient data sent.", "ok")
+
+    def fit_location(self, location):
+        # Use as many decimals as fit in one device write
+        # (5 decimals is about 1 m, 4 decimals about 11 m)
+        try:
+            lat, lon = (float(part) for part in location.split(","))
+        except ValueError:
+            return location
+
+        for decimals in (6, 5, 4, 3):
+            text = f"{lat:.{decimals}f},{lon:.{decimals}f}"
+            if len(("L:" + text).encode("utf-8")) <= MAX_WRITE_BYTES:
+                return text
+
+        return text
 
     # SYNC RTC
 

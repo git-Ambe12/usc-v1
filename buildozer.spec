@@ -20,7 +20,8 @@ orientation = portrait
 fullscreen = 0
 
 # --- Android ---
-android.permissions = BLUETOOTH, BLUETOOTH_ADMIN, BLUETOOTH_SCAN, BLUETOOTH_CONNECT, ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION
+# WRITE_EXTERNAL_STORAGE is only for saving PDFs on Android 9 and older
+android.permissions = BLUETOOTH, BLUETOOTH_ADMIN, BLUETOOTH_SCAN, BLUETOOTH_CONNECT, ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION, (name=android.permission.WRITE_EXTERNAL_STORAGE;maxSdkVersion=28)
 
 android.api = 34
 android.minapi = 24
