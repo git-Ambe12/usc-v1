@@ -18,7 +18,7 @@ LABEL_X = MARGIN + 14
 VALUE_X = MARGIN + 190
 VALUE_CHARS = 48   # characters per line before a value wraps
 LINE_HEIGHT = 15
-TABLE_TOP = PAGE_HEIGHT - 140
+TABLE_TOP = PAGE_HEIGHT - 175
 TABLE_BOTTOM = 80
 
 
@@ -38,15 +38,22 @@ def text_op(x, y, text, font="F1", size=11, rgb=TEXT):
     )
 
 
-def page_header(title, subtitle, generated):
-    top = PAGE_HEIGHT - 70
-    return [
+def page_header(title, subtitle, info, generated, heading):
+    top = PAGE_HEIGHT - 80
+    ops = [
         color(PRIMARY),
-        "0 %d %d 70 re f" % (top, PAGE_WIDTH),
-        text_op(MARGIN, top + 36, title, "F2", 20, (1, 1, 1)),
-        text_op(MARGIN, top + 18, subtitle, "F1", 10, (1, 1, 1)),
-        text_op(MARGIN, top - 30, generated, "F1", 10, MUTED),
+        "0 %d %d 80 re f" % (top, PAGE_WIDTH),
+        text_op(MARGIN, top + 44, title, "F2", 20, (1, 1, 1)),
     ]
+    if subtitle:
+        ops.append(text_op(MARGIN, top + 24, subtitle, "F1", 11, (1, 1, 1)))
+    if info:
+        ops.append(text_op(MARGIN, top - 28, info, "F2", 11, TEXT))
+    ops += [
+        text_op(MARGIN, top - (46 if info else 28), generated, "F1", 10, MUTED),
+        text_op(MARGIN, TABLE_TOP + 12, heading, "F2", 14, TEXT),
+    ]
+    return ops
 
 
 def page_footer(page_number, page_count):
@@ -93,14 +100,18 @@ def draw_row(index, label, lines, y, height):
     return ops
 
 
-def build_pdf(rows, title, subtitle, generated):
-    """rows: list of (label, value). Returns the PDF file as bytes."""
+def build_pdf(rows, title, subtitle, info, generated, heading):
+    """rows: list of (label, value). Returns the PDF file as bytes.
+
+    title/subtitle go in the coloured header band, info and generated
+    below it, and heading above the table. Empty subtitle/info are skipped.
+    """
 
     pages = layout_rows(rows)
     streams = []
 
     for number, page_rows in enumerate(pages, start=1):
-        ops = page_header(title, subtitle, generated)
+        ops = page_header(title, subtitle, info, generated, heading)
 
         if page_rows:
             top = page_rows[0][3]

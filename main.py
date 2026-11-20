@@ -355,6 +355,25 @@ KV = """
                     disabled: root.connection != "connected"
                     on_release: root.send_patient_data()
 
+            # Hospital card: printed on the PDF only, not sent to the device
+            Card:
+                SectionTitle:
+                    text: "Hospital Details (for PDF)"
+
+                FieldGroup:
+                    FieldLabel:
+                        text: "Hospital name"
+                    Field:
+                        id: hospital
+                        hint_text: "e.g. City Care Hospital"
+
+                FieldGroup:
+                    FieldLabel:
+                        text: "Doctor name"
+                    Field:
+                        id: doctor
+                        hint_text: "e.g. Dr. Sharma"
+
             # Record card
             Card:
                 BoxLayout:
@@ -708,6 +727,8 @@ class MainScreen(BoxLayout):
         self.finish_event = Clock.create_trigger(self.finish_record, 2)
         self.no_reply_event = Clock.create_trigger(self.on_no_reply, 6)
 
+        Clock.schedule_once(lambda dt: self.load_hospital())
+
         if platform == "android":
             # Android: Kivy runs on the asyncio loop (see __main__). BLE must
             # stay on this thread, since other Python threads can't load the
@@ -1029,14 +1050,47 @@ class MainScreen(BoxLayout):
 
         self.write_pdf()
 
+    def settings_store(self):
+        from kivy.storage.jsonstore import JsonStore
+        return JsonStore(os.path.join(App.get_running_app().user_data_dir, "settings.json"))
+
+    def load_hospital(self):
+        # Hospital and doctor rarely change, so remember them between runs
+        try:
+            store = self.settings_store()
+            if store.exists("hospital"):
+                saved = store.get("hospital")
+                self.ids.hospital.text = saved.get("hospital", "")
+                self.ids.doctor.text = saved.get("doctor", "")
+        except Exception as error:
+            print("Could not load hospital details:", error)
+
     def write_pdf(self):
+
+        hospital = self.ids.hospital.text.strip()
+        doctor = self.ids.doctor.text.strip()
+
+        try:
+            self.settings_store().put("hospital", hospital=hospital, doctor=doctor)
+        except Exception as error:
+            print("Could not save hospital details:", error)
+
+        # The hospital is where the baby was born: use the record's city and location
+        born_place = ", ".join(
+            value for value in (
+                self.received_data.get("C", "").strip(),
+                self.received_data.get("L", "").strip(),
+            ) if value
+        )
 
         now = datetime.now()
         data = build_pdf(
             self.record_rows(),
-            title="Patient Record",
-            subtitle="USC-V1 Patient Device Manager",
+            title=hospital or "USC-V1 Patient Report",
+            subtitle=("Location: " + born_place) if born_place else "",
+            info=("Doctor: " + doctor) if doctor else "",
             generated="Generated on " + now.strftime("%d %b %Y, %H:%M:%S"),
+            heading="Patient Record",
         )
 
         name = self.received_data.get("N", "").strip() or "patient"
